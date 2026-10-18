@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <android-base/properties.h>
 #include <cinttypes>
 #include <regex>
 #include <set>
@@ -284,9 +285,13 @@ void Controllers::init() {
         // As such simply exit netd.  This may crash loop the system, but by failing
         // to bootup we will trigger rollback and thus this offers us protection against
         // a mainline update breaking things.
-        //exit(1);
+        if (android::base::GetBoolProperty("ro.kernel.ebpf.supported", true)) {
+            exit(1);
+        }
+        gLog.info("Continuing without BPF bandwidth accounting on a legacy device");
+    } else {
+        gLog.info("Enabling bandwidth control: %" PRId64 "us", s.getTimeAndResetUs());
     }
-    gLog.info("Enabling bandwidth control: %" PRId64 "us", s.getTimeAndResetUs());
 
     if (int ret = RouteController::Init(NetworkController::LOCAL_NET_ID)) {
         gLog.error("Failed to initialize RouteController (%s)", strerror(-ret));

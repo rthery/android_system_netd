@@ -32,6 +32,7 @@
 
 #include "log/log.h"
 
+#include <android-base/properties.h>
 #include <binder/IPCThreadState.h>
 #include <binder/IServiceManager.h>
 #include <netdutils/Stopwatch.h>
@@ -134,9 +135,15 @@ int main() {
 
     if (libnetd_updatable_init(cg2_path.c_str())) {
         ALOGE("libnetd_updatable_init failed");
-        //exit(1);
+        // Legacy devices explicitly disable eBPF and must retain netd startup.
+        // Keep initialization failures fatal when eBPF support is expected.
+        if (android::base::GetBoolProperty("ro.kernel.ebpf.supported", true)) {
+            exit(1);
+        }
+        ALOGW("Continuing netd startup without eBPF support");
+    } else {
+        gLog.info("libnetd_updatable_init success");
     }
-    gLog.info("libnetd_updatable_init success");
 
     NetlinkManager *nm = NetlinkManager::Instance();
     if (nm == nullptr) {
