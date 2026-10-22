@@ -43,6 +43,7 @@
 #include <linux/rtnetlink.h>
 #include <linux/pkt_sched.h>
 
+#include "android-base/properties.h"
 #include "android-base/stringprintf.h"
 #include "android-base/strings.h"
 #define LOG_TAG "BandwidthController"
@@ -203,7 +204,46 @@ static const uint32_t uidBillingMask = Fwmark::getUidBillingMask();
  * See go/ipsec-data-accounting for more information.
  */
 
+// Kernels without eBPF count traffic with xt_qtaguid, which sees packets
+// through its "owner" match. Per-app allow and deny lists need eBPF, so data
+// saver stays unlinked rather than rejecting every app on costly networks.
+std::vector<std::string> getLegacyAccountingCommands() {
+    // clang-format off
+    return {
+            "*filter",
+            "-A bw_INPUT -j bw_global_alert",
+            "-A bw_INPUT -p esp -j RETURN",
+            StringPrintf("-A bw_INPUT -m mark --mark 0x%x/0x%x -j RETURN", uidBillingMask,
+                         uidBillingMask),
+            "-A bw_INPUT -m owner --socket-exists",
+            StringPrintf("-A bw_INPUT -j MARK --or-mark 0x%x", uidBillingMask),
+            "-A bw_OUTPUT -j bw_global_alert",
+            "-A bw_OUTPUT -m owner --socket-exists",
+            "-A bw_costly_shared -j bw_penalty_box",
+            "-A bw_penalty_box -j bw_happy_box",
+            "COMMIT",
+
+            "*raw",
+            StringPrintf("-A bw_raw_PREROUTING -m mark --mark 0x%x -j DROP", CLAT_MARK),
+            ("-A bw_raw_PREROUTING -i " IPSEC_IFACE_PREFIX "+ -j RETURN"),
+            "-A bw_raw_PREROUTING -m policy --pol ipsec --dir in -j RETURN",
+            "-A bw_raw_PREROUTING -m owner --socket-exists",
+            "COMMIT",
+
+            "*mangle",
+            ("-A bw_mangle_POSTROUTING -o " IPSEC_IFACE_PREFIX "+ -j RETURN"),
+            "-A bw_mangle_POSTROUTING -m policy --pol ipsec --dir out -j RETURN",
+            "-A bw_mangle_POSTROUTING -m owner --socket-exists",
+            StringPrintf("-A bw_mangle_POSTROUTING -j MARK --set-mark 0x0/0x%x", uidBillingMask),
+            COMMIT_AND_CLOSE};
+    // clang-format on
+}
+
 std::vector<std::string> getBasicAccountingCommands() {
+    if (!android::base::GetBoolProperty("ro.kernel.ebpf.supported", true)) {
+        return getLegacyAccountingCommands();
+    }
+
     // clang-format off
     std::vector<std::string> ipt_basic_accounting_commands = {
             "*filter",
