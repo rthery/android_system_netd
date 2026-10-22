@@ -24,6 +24,7 @@
 #include <vector>
 
 #include <android-base/file.h>
+#include <android-base/properties.h>
 #include <android-base/stringprintf.h>
 #include <android-base/strings.h>
 #include <binder/IPCThreadState.h>
@@ -119,6 +120,12 @@ bool contains(const Vector<String16>& words, const String16& word) {
     return false;
 }
 
+// Without eBPF, per-UID rules are iptables chains in netd instead of BPF maps.
+bool isBpfSupported() {
+    static const bool supported = android::base::GetBoolProperty("ro.kernel.ebpf.supported", true);
+    return supported;
+}
+
 }  // namespace
 
 NetdNativeService::NetdNativeService() {
@@ -208,9 +215,16 @@ binder::Status NetdNativeService::isAlive(bool *alive) {
     return binder::Status::ok();
 }
 
-binder::Status NetdNativeService::firewallReplaceUidChain(const std::string&, bool,
-                                                          const std::vector<int32_t>&, bool*) {
-    return binder::Status::fromExceptionCode(binder::Status::EX_UNSUPPORTED_OPERATION);
+binder::Status NetdNativeService::firewallReplaceUidChain(const std::string& chainName,
+                                                          bool isAllowlist,
+                                                          const std::vector<int32_t>& uids,
+                                                          bool* ret) {
+    if (isBpfSupported()) {
+        return binder::Status::fromExceptionCode(binder::Status::EX_UNSUPPORTED_OPERATION);
+    }
+    NETD_LOCKING_RPC(gCtls->firewallCtrl.lock, PERM_NETWORK_STACK, PERM_MAINLINE_NETWORK_STACK);
+    *ret = gCtls->firewallCtrl.replaceUidChain(chainName, isAllowlist, uids) == 0;
+    return binder::Status::ok();
 }
 
 binder::Status NetdNativeService::bandwidthEnableDataSaver(bool enable, bool *ret) {
@@ -252,20 +266,36 @@ binder::Status NetdNativeService::bandwidthSetGlobalAlert(int64_t bytes) {
     return statusFromErrcode(res);
 }
 
-binder::Status NetdNativeService::bandwidthAddNaughtyApp(int32_t) {
-    return binder::Status::fromExceptionCode(binder::Status::EX_UNSUPPORTED_OPERATION);
+binder::Status NetdNativeService::bandwidthAddNaughtyApp(int32_t uid) {
+    if (isBpfSupported()) {
+        return binder::Status::fromExceptionCode(binder::Status::EX_UNSUPPORTED_OPERATION);
+    }
+    NETD_LOCKING_RPC(gCtls->bandwidthCtrl.lock, PERM_NETWORK_STACK, PERM_MAINLINE_NETWORK_STACK);
+    return statusFromErrcode(gCtls->bandwidthCtrl.addNaughtyApps({static_cast<uint32_t>(uid)}));
 }
 
-binder::Status NetdNativeService::bandwidthRemoveNaughtyApp(int32_t) {
-    return binder::Status::fromExceptionCode(binder::Status::EX_UNSUPPORTED_OPERATION);
+binder::Status NetdNativeService::bandwidthRemoveNaughtyApp(int32_t uid) {
+    if (isBpfSupported()) {
+        return binder::Status::fromExceptionCode(binder::Status::EX_UNSUPPORTED_OPERATION);
+    }
+    NETD_LOCKING_RPC(gCtls->bandwidthCtrl.lock, PERM_NETWORK_STACK, PERM_MAINLINE_NETWORK_STACK);
+    return statusFromErrcode(gCtls->bandwidthCtrl.removeNaughtyApps({static_cast<uint32_t>(uid)}));
 }
 
-binder::Status NetdNativeService::bandwidthAddNiceApp(int32_t) {
-    return binder::Status::fromExceptionCode(binder::Status::EX_UNSUPPORTED_OPERATION);
+binder::Status NetdNativeService::bandwidthAddNiceApp(int32_t uid) {
+    if (isBpfSupported()) {
+        return binder::Status::fromExceptionCode(binder::Status::EX_UNSUPPORTED_OPERATION);
+    }
+    NETD_LOCKING_RPC(gCtls->bandwidthCtrl.lock, PERM_NETWORK_STACK, PERM_MAINLINE_NETWORK_STACK);
+    return statusFromErrcode(gCtls->bandwidthCtrl.addNiceApps({static_cast<uint32_t>(uid)}));
 }
 
-binder::Status NetdNativeService::bandwidthRemoveNiceApp(int32_t) {
-    return binder::Status::fromExceptionCode(binder::Status::EX_UNSUPPORTED_OPERATION);
+binder::Status NetdNativeService::bandwidthRemoveNiceApp(int32_t uid) {
+    if (isBpfSupported()) {
+        return binder::Status::fromExceptionCode(binder::Status::EX_UNSUPPORTED_OPERATION);
+    }
+    NETD_LOCKING_RPC(gCtls->bandwidthCtrl.lock, PERM_NETWORK_STACK, PERM_MAINLINE_NETWORK_STACK);
+    return statusFromErrcode(gCtls->bandwidthCtrl.removeNiceApps({static_cast<uint32_t>(uid)}));
 }
 
 // TODO: Remove this function when there are no users. Currently, it is still used by DNS resolver
@@ -1126,12 +1156,22 @@ binder::Status NetdNativeService::firewallSetInterfaceRule(const std::string& if
     return statusFromErrcode(res);
 }
 
-binder::Status NetdNativeService::firewallSetUidRule(int32_t, int32_t, int32_t) {
-    return binder::Status::fromExceptionCode(binder::Status::EX_UNSUPPORTED_OPERATION);
+binder::Status NetdNativeService::firewallSetUidRule(int32_t childChain, int32_t uid,
+                                                     int32_t firewallRule) {
+    if (isBpfSupported()) {
+        return binder::Status::fromExceptionCode(binder::Status::EX_UNSUPPORTED_OPERATION);
+    }
+    NETD_LOCKING_RPC(gCtls->firewallCtrl.lock, PERM_NETWORK_STACK, PERM_MAINLINE_NETWORK_STACK);
+    auto rule = static_cast<FirewallRule>(firewallRule);
+    return statusFromErrcode(gCtls->firewallCtrl.setUidRule(childChain, uid, rule));
 }
 
-binder::Status NetdNativeService::firewallEnableChildChain(int32_t, bool) {
-    return binder::Status::fromExceptionCode(binder::Status::EX_UNSUPPORTED_OPERATION);
+binder::Status NetdNativeService::firewallEnableChildChain(int32_t childChain, bool enable) {
+    if (isBpfSupported()) {
+        return binder::Status::fromExceptionCode(binder::Status::EX_UNSUPPORTED_OPERATION);
+    }
+    NETD_LOCKING_RPC(gCtls->firewallCtrl.lock, PERM_NETWORK_STACK, PERM_MAINLINE_NETWORK_STACK);
+    return statusFromErrcode(gCtls->firewallCtrl.enableChildChain(childChain, enable));
 }
 
 binder::Status NetdNativeService::firewallAddUidInterfaceRules(const std::string&,

@@ -204,9 +204,9 @@ static const uint32_t uidBillingMask = Fwmark::getUidBillingMask();
  * See go/ipsec-data-accounting for more information.
  */
 
-// Kernels without eBPF count traffic with xt_qtaguid, which sees packets
-// through its "owner" match. Per-app allow and deny lists need eBPF, so data
-// saver stays unlinked rather than rejecting every app on costly networks.
+// Kernels without eBPF count traffic with xt_qtaguid, which also provides the
+// "owner" match. Per-app deny and allow rules go into bw_penalty_box and
+// bw_happy_box, and system UIDs always bypass data saver, as before eBPF.
 std::vector<std::string> getLegacyAccountingCommands() {
     // clang-format off
     return {
@@ -221,6 +221,9 @@ std::vector<std::string> getLegacyAccountingCommands() {
             "-A bw_OUTPUT -m owner --socket-exists",
             "-A bw_costly_shared -j bw_penalty_box",
             "-A bw_penalty_box -j bw_happy_box",
+            "-A bw_happy_box -m owner --uid-owner 0-9999 -j RETURN",
+            "-A bw_happy_box -j bw_data_saver",
+            "-A bw_data_saver -j RETURN",
             "COMMIT",
 
             "*raw",
@@ -321,6 +324,8 @@ int BandwidthController::enableBandwidthControl() {
     /* Let's pretend we started from scratch ... */
     mSharedQuotaIfaces.clear();
     mQuotaIfaces.clear();
+    mNaughtyApps.clear();
+    mNiceApps.clear();
     mGlobalAlertBytes = 0;
     mSharedQuotaBytes = mSharedAlertBytes = 0;
 
@@ -355,6 +360,47 @@ int BandwidthController::enableDataSaver(bool enable) {
     int ret = iptablesRestoreFunction(V4, makeDataSaverCommand(V4, enable), nullptr);
     ret |= iptablesRestoreFunction(V6, makeDataSaverCommand(V6, enable), nullptr);
     return ret;
+}
+
+int BandwidthController::manipulateSpecialApps(const std::vector<uint32_t>& appUids,
+                                               std::set<uint32_t>& listed, const char* chain,
+                                               IptJumpOp jump, bool add) {
+    std::string commands = "*filter\n";
+    std::vector<uint32_t> changed;
+    for (const auto uid : appUids) {
+        // Deleting a rule that is not there would fail the whole restore.
+        if (add == (listed.count(uid) > 0)) continue;
+        StringAppendF(&commands, "%s %s -m owner --uid-owner %u%s\n", add ? "-I" : "-D", chain,
+                      uid, jumpToString(jump));
+        changed.push_back(uid);
+    }
+    if (changed.empty()) return 0;
+    commands += "COMMIT\n";
+    if (iptablesRestoreFunction(V4V6, commands, nullptr) != 0) return -EREMOTEIO;
+    for (const auto uid : changed) {
+        if (add) {
+            listed.insert(uid);
+        } else {
+            listed.erase(uid);
+        }
+    }
+    return 0;
+}
+
+int BandwidthController::addNaughtyApps(const std::vector<uint32_t>& appUids) {
+    return manipulateSpecialApps(appUids, mNaughtyApps, "bw_penalty_box", IptJumpReject, true);
+}
+
+int BandwidthController::removeNaughtyApps(const std::vector<uint32_t>& appUids) {
+    return manipulateSpecialApps(appUids, mNaughtyApps, "bw_penalty_box", IptJumpReject, false);
+}
+
+int BandwidthController::addNiceApps(const std::vector<uint32_t>& appUids) {
+    return manipulateSpecialApps(appUids, mNiceApps, "bw_happy_box", IptJumpReturn, true);
+}
+
+int BandwidthController::removeNiceApps(const std::vector<uint32_t>& appUids) {
+    return manipulateSpecialApps(appUids, mNiceApps, "bw_happy_box", IptJumpReturn, false);
 }
 
 int BandwidthController::setInterfaceSharedQuota(const std::string& iface, int64_t maxBytes) {

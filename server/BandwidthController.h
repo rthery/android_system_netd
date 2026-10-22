@@ -77,6 +77,9 @@ public:
         int64_t alert;
     };
 
+    int manipulateSpecialApps(const std::vector<uint32_t>& appUids, std::set<uint32_t>& listed,
+                              const char* chain, IptJumpOp jump, bool add);
+
     enum IptIpVer { IptIpV4, IptIpV6 };
     enum IptFullOp { IptFullOpInsert, IptFullOpDelete, IptFullOpAppend };
     enum QuotaType { QuotaUnique, QuotaShared };
@@ -128,6 +131,8 @@ public:
 
     std::map<std::string, QuotaInfo> mQuotaIfaces;
     std::set<std::string> mSharedQuotaIfaces;
+    std::set<uint32_t> mNaughtyApps;
+    std::set<uint32_t> mNiceApps;
 };
 
 #endif
