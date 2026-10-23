@@ -233,9 +233,10 @@ int FirewallController::setupLegacyUidChains() {
     return 0;
 }
 
-// Allowlist chains let system UIDs, TCP resets and the ICMPv6 needed for IPv6 through, then
-// drop everything else. Denylist chains drop the listed UIDs. The owner match comes from
-// xt_qtaguid, which also matches incoming packets of local sockets.
+// Allowlist chains let system UIDs, incoming pings (the kernel answers them, eBPF never sees
+// them), TCP resets and the ICMPv6 needed for IPv6 through, then drop everything
+// else. Denylist chains drop the listed UIDs. The owner match comes from xt_qtaguid, which also
+// matches incoming packets of local sockets.
 int FirewallController::replaceUidChain(const std::string& name, bool isAllowlist,
                                         const std::vector<int32_t>& uids) {
     const UidChain* chain = findChain(name);
@@ -245,6 +246,10 @@ int FirewallController::replaceUidChain(const std::string& name, bool isAllowlis
         std::string commands = StringPrintf("*filter\n:%s -\n", chain->name);
         if (isAllowlist) {
             StringAppendF(&commands, "-A %s -m owner --uid-owner 0-9999 -j RETURN\n", chain->name);
+            StringAppendF(&commands, "-A %s %s -m owner ! --socket-exists -j RETURN\n",
+                          chain->name,
+                          target == V6 ? "-p icmpv6 --icmpv6-type echo-request"
+                                       : "-p icmp --icmp-type echo-request");
             StringAppendF(&commands, "-A %s -p tcp --tcp-flags RST RST -j RETURN\n", chain->name);
             commands += makeCriticalCommands(target, chain->name);
         }
